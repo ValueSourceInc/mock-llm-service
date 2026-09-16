@@ -1,0 +1,15 @@
+{
+  "name": "mock-llm-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mock Claude/GPT upstream for load-testing new-api relay",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
