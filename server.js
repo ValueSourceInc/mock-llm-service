@@ -95,8 +95,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(config.port, '127.0.0.1', () => {
-  console.log(`mock-llm-service listening on http://localhost:${config.port}`);
+server.listen(config.port, config.host, () => {
+  console.log(`mock-llm-service listening on http://${config.host}:${config.port}`);
   console.log(`  ttft=${config.ttftMs}ms interval=${config.tokenIntervalMs}ms tokens=${config.defaultOutputTokens} models=[${config.models.join(', ')}]`);
   const rates = [
     ['429', config.error429Rate], ['500', config.error500Rate], ['timeout', config.errorTimeoutRate],
