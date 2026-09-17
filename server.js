@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { config } from './lib/config.js';
 import { rollFault, requestOverrides } from './lib/generator.js';
-import { snapshot } from './lib/stats.js';
+import { snapshot, recordStart, recordEnd } from './lib/stats.js';
 import * as openai from './lib/openai.js';
 import * as anthropic from './lib/anthropic.js';
 
@@ -51,24 +51,34 @@ const server = http.createServer(async (req, res) => {
     // body.mock_fault forces a kind; otherwise roll the configured probabilities
     const ov = requestOverrides(body);
     const fault = ov.fault ?? rollFault();
+    const faultModel = typeof body.model === 'string' ? body.model : 'unknown';
     if (fault === '429') {
+      recordStart(faultModel);
       isOpenAI ? openai.sendError(429, 'rate_limit_error', 'mock rate limit', res)
                : anthropic.sendError(429, 'rate_limit_error', 'mock rate limit', res);
+      recordEnd(faultModel, { ok: false, errorType: 'rate_limit' });
       return;
     }
     if (fault === '500') {
+      recordStart(faultModel);
       isOpenAI ? openai.sendError(500, 'server_error', 'mock internal error', res)
                : anthropic.sendError(500, 'api_error', 'mock internal error', res);
+      recordEnd(faultModel, { ok: false, errorType: 'server_error' });
       return;
     }
     if (fault === 'timeout') {
+      recordStart(faultModel);
+      let ended = false;
       const t = setTimeout(() => {
+        if (ended) return;
+        ended = true;
         if (!res.headersSent) {
           res.writeHead(504, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: 'mock upstream timeout', type: 'timeout' } }));
         }
+        recordEnd(faultModel, { ok: false, errorType: 'timeout' });
       }, config.timeoutMs);
-      req.on('close', () => clearTimeout(t));
+      req.on('close', () => { if (!ended) { ended = true; clearTimeout(t); recordEnd(faultModel, { ok: false, errorType: 'client_abort' }); } });
       return;
     }
 
