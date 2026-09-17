@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { config } from './lib/config.js';
-import { rollFault } from './lib/generator.js';
+import { rollFault, requestOverrides } from './lib/generator.js';
 import { snapshot } from './lib/stats.js';
 import * as openai from './lib/openai.js';
 import * as anthropic from './lib/anthropic.js';
@@ -48,7 +48,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     // fault injection (shared logic, protocol-specific error shape)
-    const fault = rollFault();
+    // body.mock_fault forces a kind; otherwise roll the configured probabilities
+    const ov = requestOverrides(body);
+    const fault = ov.fault ?? rollFault();
     if (fault === '429') {
       isOpenAI ? openai.sendError(429, 'rate_limit_error', 'mock rate limit', res)
                : anthropic.sendError(429, 'rate_limit_error', 'mock rate limit', res);
@@ -70,8 +72,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (isOpenAI) await openai.handleChat(body, res);
-    else await anthropic.handleMessages(body, res);
+    if (isOpenAI) await openai.handleChat(body, res, { ...ov, fault });
+    else await anthropic.handleMessages(body, res, { ...ov, fault });
   } catch (err) {
     if (!res.headersSent) {
       const status = err instanceof RangeError ? 400 : 500;
@@ -86,6 +88,29 @@ const server = http.createServer(async (req, res) => {
 server.listen(config.port, '127.0.0.1', () => {
   console.log(`mock-llm-service listening on http://localhost:${config.port}`);
   console.log(`  ttft=${config.ttftMs}ms interval=${config.tokenIntervalMs}ms tokens=${config.defaultOutputTokens} models=[${config.models.join(', ')}]`);
-  const inj = config.error429Rate + config.error500Rate + config.errorTimeoutRate + config.errorRate;
-  console.log(`  fault injection: ${(inj * 100).toFixed(1)}% (429=${config.error429Rate} 500=${config.error500Rate} timeout=${config.errorTimeoutRate} generic=${config.errorRate})`);
+  const rates = [
+    ['429', config.error429Rate], ['500', config.error500Rate], ['timeout', config.errorTimeoutRate],
+    ['disconnect', config.errorDisconnectRate], ['pause', config.errorPauseRate],
+    ['heartbeat', config.errorHeartbeatRate], ['error_event', config.errorEventRate], ['generic', config.errorRate],
+  ];
+  const inj = rates.reduce((a, [, r]) => a + r, 0);
+  console.log(`  fault injection: ${(inj * 100).toFixed(1)}% (${rates.map(([k, r]) => `${k}=${r}`).join(' ')})`);
 });
+
+// graceful shutdown: stop accepting, let in-flight streams finish, then dump final metrics
+function shutdown(signal) {
+  console.log(`\n${signal} received, draining in-flight requests...`);
+  server.close(() => {
+    console.log('all connections closed');
+    console.log(JSON.stringify(snapshot(), null, 2));
+    process.exit(0);
+  });
+  // hard cap: don't hang forever on stuck/heartbeat streams
+  setTimeout(() => {
+    console.log('drain deadline reached, forcing close');
+    console.log(JSON.stringify(snapshot(), null, 2));
+    process.exit(0);
+  }, 15000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
